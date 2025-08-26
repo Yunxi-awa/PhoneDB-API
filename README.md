@@ -20,8 +20,8 @@ pip install phonedb_api
 ```
 ## 从源代码安装
 ```bash
-git clone https://github.com/PhoneDB/PhoneDB.git
-cd PhoneDB
+git clone https://github.com/Yunxi-awa/PhoneDB-API.git
+cd PhoneDB-API
 pip install .
 ```
 
