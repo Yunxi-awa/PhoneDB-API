@@ -14,14 +14,14 @@
 3. [x] 支持本地数据库缓存
 
 # 安装
-## 通过PIP安装
-```bash
-pip install phonedb_api
-```
+[//]: # (## 通过PIP安装)
+[//]: # (```bash)
+[//]: # (pip install phonedb_api)
+[//]: # (```)
 ## 从源代码安装
 ```bash
-git clone https://github.com/PhoneDB/PhoneDB.git
-cd PhoneDB
+git clone https://github.com/Yunxi-awa/PhoneDB-API.git
+cd PhoneDB-API
 pip install .
 ```
 
