@@ -1,6 +1,6 @@
-<h1 style="text-align: center">Python API for PhoneDB.net</h1>
+<h1 align="center">Python API for PhoneDB.net</h1>
 
-<h3 style="text-align: center">**phonedb_api** 是一个简单而优雅的 Python 库, 实现了访问 PhoneDB.net 的 API.</h3>
+<h3 align="center">**phonedb_api** 是一个简单而优雅的 Python 库, 实现了访问 PhoneDB.net 的 API.</h3>
 
 # 功能
 ## API

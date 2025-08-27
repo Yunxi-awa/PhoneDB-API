@@ -6,7 +6,12 @@ from phonedb_api import *
 
 
 async def main():
-    db = DatabaseTinyDB(r"E:\Code\Python\PhoneDB\cache\database.json", lazy_storage=True, escape_forward_slashes=False)
+    db = DatabaseTinyDB(
+        r"E:\Code\Python\PhoneDB-API\cache\database.json",
+        storage_cache_size=1024,
+        query_cache_size=64,
+        escape_forward_slashes=False
+    )
 
     async with PhoneDB(session_config=SessionConfig(kwargs={"verify": False}), database=db) as s:
         logger.debug(await s.get_latest_id(ItemCategory.DEVICE))

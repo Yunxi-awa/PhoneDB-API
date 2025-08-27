@@ -9,7 +9,7 @@ from .exception import ResponseError
 
 class EnhancedAsyncSession(curl_cffi.AsyncSession):
     def __init__(self, session_config: SessionConfig = None):
-        super().__init__(**(session_config.kwargs if session_config is not None else {}))
+        super().__init__(**session_config.kwargs)
         self._session_config = session_config if session_config is not None else SessionConfig()
 
     async def request(self, method: curl_cffi.requests.HttpMethod, url: str, **kwargs):

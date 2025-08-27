@@ -1,8 +1,9 @@
 import atexit
 import ujson
 from loguru import logger
-from tinydb import TinyDB, Query
+from tinydb import TinyDB, Query, JSONStorage
 from tinydb.storages import MemoryStorage
+from tinydb.middlewares import CachingMiddleware
 from abc import ABC, abstractmethod
 
 from .item import Item, ItemInfo
@@ -19,27 +20,18 @@ class Database(ABC):
 
 
 class DatabaseTinyDB(Database, TinyDB):
-    def __init__(self, db_path: str, lazy_storage: bool = False, cache_size: int = 64, *args, **kwargs):
+    def __init__(self, db_path: str, storage_cache_size: int = 1024, query_cache_size: int = 64, **kwargs):
         atexit.register(self.close)
-        if lazy_storage:
-            super().__init__(storage=MemoryStorage, *args, **kwargs)
-        else:
-            super().__init__(db_path, *args, **kwargs)
-        self.db_path = db_path
-        self.cache_size = cache_size
 
-    def close(self) -> None:
-        data = {table_name: self.table(table_name).all() for table_name in self.tables()}
-        logger.debug(f"数据库总大小: {sum([len(table) for table in data.values()])}")
-        logger.debug(f"数据库表大小: {[len(table) for table in data.values()]}")
-        logger.debug(f"数据库表名: {self.tables()}")
-        if self.db_path is not None:
-            with open(self.db_path, "w") as f:
-                f.write(ujson.dumps(data))
-        super().close()
+        middleware = CachingMiddleware(JSONStorage)
+        middleware.WRITE_CACHE_SIZE = storage_cache_size
+        super().__init__(db_path, storage=middleware, **kwargs)
+
+        self.db_path = db_path
+        self.query_cache_size = query_cache_size
 
     def cache_item(self, item: Item):
-        table = self.table(item.item_info.category, cache_size=self.cache_size)
+        table = self.table(item.item_info.category, cache_size=self.query_cache_size)
         try:
             table.insert(item.parsed)
             logger.debug(f"缓存 {item.item_info} 成功")
@@ -48,7 +40,7 @@ class DatabaseTinyDB(Database, TinyDB):
 
     def query_item(self, item_info: ItemInfo) -> Item | None:
         q = Query()
-        table = self.table(item_info.category, cache_size=self.cache_size)
+        table = self.table(item_info.category, cache_size=self.query_cache_size)
         results = table.search(q.id == item_info.id_spec)
 
         if len(results) == 0:

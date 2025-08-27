@@ -5,7 +5,7 @@ import lxml.etree
 from loguru import logger
 
 from .config import SessionConfig
-from .database import Database, DatabaseTinyDB
+from .database import Database
 from .exception import ResponseError
 from .item import Item, ItemCategory, ItemInfo
 from .session import EnhancedAsyncSession
@@ -16,10 +16,8 @@ class PhoneDB:
             self,
             database: Database,
             session_config: SessionConfig = None,
-            # 缓存地址
     ):
         self._db = database
-
         self._session = EnhancedAsyncSession(session_config=session_config)
 
     async def __aenter__(self):
