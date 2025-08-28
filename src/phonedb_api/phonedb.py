@@ -4,21 +4,27 @@ import urllib.parse
 import lxml.etree
 from loguru import logger
 
-from .config import SessionConfig
-from .database import Database
+from .database import Database, DatabaseTinyDB
 from .exception import ResponseError
 from .item import Item, ItemCategory, ItemInfo
-from .session import EnhancedAsyncSession
+from .web_session import WebSession, WebSessionCurlCffi
 
 
 class PhoneDB:
+    """
+    一个用于获取手机信息的类
+
+    :param database: 数据库对象
+    :param session: 网络会话对象
+    """
+
     def __init__(
             self,
             database: Database,
-            session_config: SessionConfig = None,
+            session: WebSession,
     ):
         self._db = database
-        self._session = EnhancedAsyncSession(session_config=session_config)
+        self._session = session
 
     async def __aenter__(self):
         return self
@@ -26,7 +32,11 @@ class PhoneDB:
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.close()
 
-    async def close(self) -> None:
+    async def close(self):
+        """
+        关闭会话, 并清理数据库
+        """
+        self._db.close()
         await self._session.close()
 
     async def get_latest_id(self, category: ItemCategory = None) -> int:
@@ -79,15 +89,14 @@ class PhoneDB:
 class MultiPhoneDB(PhoneDB):
     def __init__(
             self,
-            session_config: SessionConfig = None,
-            database: Database = None,  # 缓存地址
+            database: Database,
+            session: WebSession,
             max_workers: int = 16,
     ):
-        if session_config is None:
-            session_config = SessionConfig()
-        session_config.kwargs["max_clients"] = max_workers
-        super().__init__(database, session_config)
+        super().__init__(database, session)
         self.max_workers = max_workers
+
+        self._session.set_max_workers(self.max_workers * 2)
 
     async def multi_get_item_smartly(self, item_infos: list[ItemInfo]) -> list[Item]:
         """
@@ -98,6 +107,11 @@ class MultiPhoneDB(PhoneDB):
         semaphore = asyncio.Semaphore(self.max_workers)
 
         async def worker(item_info: ItemInfo):
+            """
+            并发获取单个ItemInfo
+            :param item_info: ItemInfo
+            :return: Item
+            """
             async with semaphore:
                 return await self.get_item_smartly(item_info)
 
