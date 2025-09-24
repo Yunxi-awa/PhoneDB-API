@@ -1,133 +1,191 @@
-import asyncio
+import abc
+import math
 import urllib.parse
+from typing import AsyncGenerator
 
 import lxml.etree
-from loguru import logger
 
-from .database import Database, DatabaseTinyDB
-from .exception import ResponseError
-from .item import Item, ItemCategory, ItemInfo
-from .web_session import WebSession, WebSessionCurlCffi
+from .client import Client
+from .instance import InstMeta, InstCat
+from .response import PhoneDBResponse
+from .runner import AbstractAsyncRunner, AsyncParallelRunner
 
 
-class PhoneDB:
-    """
-    一个用于获取手机信息的类
+# Solana saga
 
-    :param database: 数据库对象
-    :param session: 网络会话对象
-    """
+class AbstractPhoneDBSession(abc.ABC):
+    @abc.abstractmethod
+    def get_latest_id(self, inst_cat: InstCat) -> int:
+        """
+        获取最新实例ID
+        """
+        raise NotImplementedError
 
-    def __init__(
-            self,
-            database: Database,
-            session: WebSession,
-    ):
-        self._db = database
-        self._session = session
+    @abc.abstractmethod
+    def get_data(self, inst_meta: InstMeta) -> dict:
+        """
+        获取实例数据
+        """
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def search(self, query: str, inst_cat: InstCat) -> list[InstMeta]:
+        """
+        搜索实例
+        """
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def query(self, **kwargs) -> list[InstMeta]:
+        """
+        查询实例
+        """
+        raise NotImplementedError
+
+
+class PhoneDBHTTPSession(AbstractPhoneDBSession):
+    BASE_URL = "https://phonedb.net/"
+
+    def __init__(self, runner: AbstractAsyncRunner = AsyncParallelRunner(), **kwargs):
+        self.runner = runner
+        self.session = Client(**kwargs)
+        self.queries_cache = None
 
     async def __aenter__(self):
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self.close()
+        await self.session.close()
 
-    async def close(self):
-        """
-        关闭会话, 并清理数据库
-        """
-        self._db.close()
-        await self._session.close()
+    async def get_latest_id(self, inst_cat: InstCat) -> int:
+        response = await self.session.retryable_get(
+            "https://phonedb.net/index.php",
+            params={
+                "m": inst_cat,
+                "s": "list"
+            }
+        )
 
-    async def get_latest_id(self, category: ItemCategory = None) -> int:
-        # 构建目标URL，category参数用于指定要查询的分类(设备/固件/处理器等)
-        url = f"https://phonedb.net/index.php?m={category}&s=list"
-
-        text = await self._fetch_html_text(url)
-
-        # 使用lxml解析HTML内容
-        tree = lxml.etree.HTML(text)
-
-        # 从查询参数中提取ID并转换为整数返回
-
-        # 解析URL中的查询参数
-        # 通过XPath定位页面中最新条目的链接
-        # 这里查找的是页面中第一个设备/固件/处理器的链接
+        tree = lxml.etree.HTML(response.text)
         href = tree.xpath("/html/body/div[5]/div[1]/div[1]/a")[0].get("href")
         parsed_url = urllib.parse.urlparse(href)
         query = urllib.parse.parse_qs(parsed_url.query)
         return int(query["id"][0])
 
-    async def _fetch_html_text(self, url: str) -> str:
-        """处理请求获取逻辑"""
-        response = await self._session.get(url)
-        if response is None:
-            raise ResponseError(f"无返回信息.")
-        response.raise_for_status()
-        if len(response.text) <= 4096:
-            raise ResponseError(f"返回信息过短: {len(response.text)}\n{response.text}")
-        return response.text
+    async def get_data(self, inst_meta: InstMeta) -> dict:
+        response = await self.session.retryable_get(
+            f"https://phonedb.net/index.php",
+            params={
+                "m": inst_meta.inst_cat,
+                "id": inst_meta.inst_id,
+                "d": "detailed_specs"
+            }
+        )
+        return await response.parse_instance()
 
-    async def get_item_from_web(self, item_info: ItemInfo) -> Item:
-        url = f"https://phonedb.net/index.php?m={item_info.category}&id={item_info.id_spec}&d=detailed_specs"
-        return Item(item_info, await self._fetch_html_text(url))
+    async def search(self, query: str, inst_cat: InstCat) -> AsyncGenerator[InstMeta]:
+        # 为初始请求添加重试
+        response = await self.session.retryable_post(
+            f"https://phonedb.net/index.php",
+            params={
+                "m": inst_cat,
+                "s": "list"
+            },
+            data={
+                "search_exp": query,
+                "search_header": "",
+            }
+        )
 
-    async def get_item_smartly(self, item_info: ItemInfo) -> Item:
-        item = self._db.query_item(item_info)  # 优先尝试从缓存读取
-        if item is None:
-            item = await self.get_item_from_web(item_info)  # 失败时再从网络获取
-            self._db.cache_item(item)
-        return item
+        tree = lxml.etree.HTML(await response.text())
+        results_count = int(tree.xpath("/html/body/div[4]/text()[1]")[0].split(" ")[0])
 
-    async def ensure_item_cached(self, item_info: ItemInfo):
-        item = self._db.query_item(item_info)
-        if item is None:
-            item = await self.get_item_from_web(item_info)
-            self._db.cache_item(item)
+        # Do-While
+        for i in range(1, math.ceil(results_count / 29)):
+            tree = lxml.etree.HTML(await response.text())
+            for j in tree.xpath("/html/body/div[5]")[0].getchildren():
+                if j.tag != "div" or j.get("style"):
+                    continue
+                yield InstMeta(
+                    inst_cat=inst_cat,
+                    inst_id=int(urllib.parse.parse_qs(
+                        urllib.parse.urlparse(j.getchildren()[0].getchildren()[0].get("href")).query
+                    )["id"][0])
+                )
 
+            filter_arg = i * 29
+            # 为分页请求添加重试
+            response = await self.session.retryable_post(
+                f"https://phonedb.net/index.php",
+                params={
+                    "m": inst_cat,
+                    "s": "list",
+                    "filter": filter_arg
+                },
+                data={
+                    "search_exp": query,
+                    "search_header": "",
+                }
+            )
 
-class MultiPhoneDB(PhoneDB):
-    def __init__(
-            self,
-            database: Database,
-            session: WebSession,
-            max_workers: int = 16,
-    ):
-        super().__init__(database, session)
-        self.max_workers = max_workers
+    async def query(self, inst_cat: InstCat, params: dict) -> AsyncGenerator[InstMeta]:
+        # 为初始请求添加重试
+        response = await self.session.retryable_get(
+            f"https://phonedb.net/index.php",
+            params={
+                "m": inst_cat,
+                "s": "query",
+                "d": "detailed_specs"
+            }
+        )
 
-        self._session.set_max_workers(self.max_workers * 2)
+        payload = await response.create_query_payload(params)
+        # 为POST请求添加重试
+        response: PhoneDBResponse = await self.session.retryable_post(
+            f"https://phonedb.net/index.php",
+            params={
+                "m": inst_cat,
+                "s": "query",
+                "d": "detailed_specs"
+            },
+            data=payload
+        )
+        with open('response.html', 'w', encoding='utf-8') as f:
+            f.write(await response.text())
 
-    async def multi_get_item_smartly(self, item_infos: list[ItemInfo]) -> list[Item]:
-        """
-        并发获取多个ItemInfo
-        :param item_infos: 多个ItemInfo
-        :return: 多个Item
-        """
-        semaphore = asyncio.Semaphore(self.max_workers)
+        tree = lxml.etree.HTML(await response.text())
+        text = tree.xpath("/html/body/div[5]/form/div[2]/text()[1]")[0]
+        if "no content" in text.lower():
+            return
+        results_count = int(text.split(" ")[0])
 
-        async def worker(item_info: ItemInfo):
-            """
-            并发获取单个ItemInfo
-            :param item_info: ItemInfo
-            :return: Item
-            """
-            async with semaphore:
-                return await self.get_item_smartly(item_info)
+        # Do-While
+        for i in range(1, math.ceil(results_count / 29)):
+            filter_arg = i * 29
+            # 为分页请求添加重试
+            self.runner.register(self.session.retryable_post(
+                f"https://phonedb.net/index.php",
+                params={
+                    "m": inst_cat,
+                    "s": "query",
+                    "d": "detailed_specs"
+                },
+                data=payload | dict(result_lower_limit=str(filter_arg))
+            ))
 
-        return await asyncio.gather(*[worker(item_info) for item_info in item_infos])
-
-    async def multi_ensure_item_cached(self, item_infos: list[ItemInfo]):
-        """
-        并发缓存多个ItemInfo
-        :param item_infos: 多个ItemInfo
-        :return: None
-        """
-        semaphore = asyncio.Semaphore(self.max_workers)
-
-        async def worker(item_info: ItemInfo):
-            async with semaphore:
-                await self.ensure_item_cached(item_info)
-                logger.info(f"{item_info}: 缓存完毕.")
-
-        await asyncio.gather(*[worker(item_info) for item_info in item_infos])
+        async for response in self.runner.run():
+            tree = lxml.etree.HTML(await response.text())
+            for div in tree.xpath("/html/body/div[5]/form")[0].getchildren():
+                if (
+                        div.tag != "div"
+                        or div.get("style")
+                        or div.get("class") != "content_block"
+                        or div.getchildren()[0].get("class") != "content_block_title"
+                ):
+                    continue
+                yield InstMeta(
+                    inst_cat=inst_cat,
+                    inst_id=int(urllib.parse.parse_qs(
+                        urllib.parse.urlparse(div.getchildren()[0].getchildren()[0].get("href")).query
+                    )["id"][0])
+                )

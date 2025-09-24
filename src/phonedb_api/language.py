@@ -14,7 +14,10 @@ class LangCode(enum.StrEnum):
 
 
 class LangClass(ABC):
-    map = {}
+    """
+    语言基类
+    """
+    _map = {}
 
     @property
     @abstractmethod
@@ -29,7 +32,7 @@ class LangClass(ABC):
         """
         :return: 翻译文本字典
         """
-        return self.map
+        return self._map
 
     def translate(self, key: str) -> str:
         """获取翻译文本，支持格式化参数"""
@@ -45,15 +48,17 @@ class LangClass(ABC):
 
 
 class LangClassEnUS(LangClass):
-    map = {}
+    _map = {}
 
     @property
     def code(self):
         return "EN_US"
 
+    def translate(self, key: str) -> str:
+        return key
 
 class LangClassZhCN(LangClass):
-    map = {
+    _map = {
         "Introduction": "介绍",
         "Brand": "品牌",
         "Model": "型号",
@@ -63,7 +68,7 @@ class LangClassZhCN(LangClass):
         "Hardware Designer": "硬件设计",
         "Codename": "代号",
         "General Extras": "一般额外功能",
-        "Device Category": "设备类型",
+        "Device InstanceCategory": "设备类型",
         "List of Additional Features": "额外功能",
 
         "Physical Attributes": "物理信息",
@@ -243,7 +248,10 @@ class LangClassZhCN(LangClass):
         "Datasheet Attributes": "数据表属性",
         "Data Integrity": "数据完整性",
         "Added": "添加日期",
-        "id": "ID"
+
+        "Meta": "元信息",
+        "ID": "ID",
+        "Image": "图片"
     }
 
     @property
