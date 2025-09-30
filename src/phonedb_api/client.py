@@ -4,7 +4,7 @@ from functools import wraps
 import aiohttp
 from loguru import logger
 
-from .response import PhoneDBResponse
+
 def async_retry(max_attempts=3, initial_wait=1, max_wait=10):
     """
     异步重试装饰器
@@ -28,6 +28,7 @@ def async_retry(max_attempts=3, initial_wait=1, max_wait=10):
                         asyncio.TimeoutError,
                         ConnectionError,
                         OSError) as e:
+                    logger.error(f"Request failed (attempt {retry_count + 1}/{max_attempts}): {e}")
                     last_exception = e
                     retry_count += 1
 
@@ -45,6 +46,7 @@ def async_retry(max_attempts=3, initial_wait=1, max_wait=10):
 
     return decorator
 
+
 class Client(aiohttp.ClientSession):
     def __init__(self, *args, **kwargs):
         """
@@ -54,17 +56,16 @@ class Client(aiohttp.ClientSession):
             *args: 位置参数，传递给父类的初始化方法。
             **kwargs: 关键字参数，传递给父类的初始化方法。
         """
-        kwargs.pop("response_class", None)
-        super().__init__(*args, **kwargs, response_class=PhoneDBResponse)
+        super().__init__(*args, **kwargs)
 
     @async_retry(max_attempts=3, initial_wait=1, max_wait=10)
-    async def retryable_get(self, url, **kwargs) -> PhoneDBResponse:
+    async def retryable_get(self, url, **kwargs):
         """可重试的GET请求"""
         logger.debug(f"GET {url}")
         return await self.get(url, **kwargs)
 
     @async_retry(max_attempts=3, initial_wait=1, max_wait=10)
-    async def retryable_post(self, url, **kwargs) -> PhoneDBResponse:
+    async def retryable_post(self, url, **kwargs):
         """可重试的POST请求"""
         logger.debug(f"POST {url}")
         return await self.post(url, **kwargs)

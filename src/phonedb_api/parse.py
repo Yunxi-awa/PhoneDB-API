@@ -1,26 +1,28 @@
+import copy
 import re
 
-import requests
-from bs4 import BeautifulSoup, Tag
-import copy
+from bs4 import PageElement, Tag, NavigableString, BeautifulSoup
+from loguru import logger
+
+from .instance import InstCat, InstMeta, Instance
 
 
-class FormHandler:
+class QueryFormParser:
     """
-    一个用于动态解析和处理HTML表单的类。
-    它可以加载一个HTML文件，解析其中的特定表单，获取其默认提交值，
-    并提供一个方法来根据用户指定的参数覆盖默认值，生成一个准备发送的POST请求负载。
-    """
+        一个用于动态解析和处理HTML表单的类。
+        它可以加载一个HTML文件，解析其中的特定表单，获取其默认提交值，
+        并提供一个方法来根据用户指定的参数覆盖默认值，生成一个准备发送的POST请求负载。
+        """
 
-    def __init__(self, html_content: str):
+    def __init__(self, html: str):
         """
         初始化处理器，加载并解析HTML文件中的第二个表单。
 
         Args:
-            html_content (str): HTML内容字符串。
+            html (str): HTML内容字符串。
         """
 
-        self.soup = BeautifulSoup(html_content, 'html.parser')
+        self.soup = BeautifulSoup(html, 'lxml')
         forms = self.soup.find_all('form')
         if len(forms) < 2:
             raise ValueError("错误：HTML中未找到第二个<form>标签。")
@@ -33,25 +35,25 @@ class FormHandler:
         self._parse_form()
         self._populate_default_payload()
 
-    def _get_clean_label_text(self, element: Tag) -> str:
+    def _get_clean_label_text(self, element: PageElement | Tag | NavigableString) -> str:
         """为字段标签提取干净的文本，保留括号但移除末尾的冒号。"""
         if not element:
             return ""
         text = ' '.join(element.get_text(strip=True).split())
         return text.rstrip(':').strip()
 
-    def _get_clean_option_text(self, element: Tag) -> str:
+    def _get_clean_option_text(self, element: PageElement | Tag | NavigableString) -> str:
         """为选项提取干净的文本，移除末尾的计数和括号里的额外描述。"""
         if not element:
             return ""
         text = ' '.join(element.get_text(strip=True).split())
-        text = re.sub(r'\s*\[\d+\]\s*$', '', text)
+        text = re.sub(r'\s*\[\d+]\s*$', '', text)
         return text.strip()
 
     def _pre_initialize_group_field(self, desc_element: Tag, label: str):
         """为一个分组的复选框字段预先创建字段定义。"""
         if label and label not in self.fields:
-            first_input = desc_element.find_next('input', {'name': re.compile(r'.+\[\]')})
+            first_input = desc_element.find_next('input', {'name': re.compile(r'.+\[]')})
             if first_input:
                 self.fields[label] = {
                     'name': first_input.get('name'),
@@ -101,7 +103,7 @@ class FormHandler:
 
             if target_field_label in self.fields and self.fields[target_field_label]['type'] == 'checkbox':
                 for cb in checkboxes:
-                    label_el = item.find('label', {'for': cb.get('id')})
+                    label_el = item.find('label', {'for': str(cb.get('id'))})
                     if label_el:
                         option_text = self._get_clean_option_text(label_el)
                         if option_text:
@@ -169,7 +171,7 @@ class FormHandler:
         """
         return copy.deepcopy(self.default_payload)
 
-    def create_payload(self, params: dict = None) -> tuple[str, dict]:
+    async def parse(self, params: dict = None) -> dict:
         """
         根据用户提供的参数覆盖默认值，生成最终的表单负载。
         如果未提供参数，则返回默认负载。
@@ -255,4 +257,164 @@ class FormHandler:
         if errors:
             raise ValueError("创建表单负载失败，存在以下错误:\n" + "\n".join(errors))
 
-        return self.form_action, payload
+        return payload
+
+class InstanceParser:
+    """
+    Parses an HTML table into a structured dictionary, handling specific edge cases
+    and data corrections through a patching mechanism.
+    """
+
+    def __init__(self, meta: InstMeta, html: str):
+        """
+        Initializes the parser with item metadata and HTML content.
+
+        """
+        self.meta = meta
+        self.soup = BeautifulSoup(html, 'lxml')
+        self.results: dict = {}
+
+        # State variables for tracking context during parsing
+        self.current_section_key: str | None = None
+        self.last_field_key: str | None = None
+
+    async def parse(self) -> Instance:
+        """
+        Public method to execute the full parsing workflow.
+
+        Returns:
+            A dictionary containing the parsed data.
+        """
+        self.results = {
+            "Meta": {
+                "Image": None,
+            }
+        }
+
+        # Handle early exit for specific cases
+        if self.meta.inst_cat == InstCat.DEVICE and self.meta.inst_id == 24170:
+            logger.warning(f"{self.meta} 无内容")
+            return Instance(self.meta, self.results)
+
+
+        self._extract_image_url()
+        self._process_table_rows()
+        self._apply_patches()
+
+        return Instance(self.meta, self.results)
+
+
+    @staticmethod
+    def _split_by_commas_outside_parentheses(text: str) -> list[str]:
+        """
+        Splits a string by commas, but ignores commas inside parentheses.
+        """
+        parts = []
+        start = 0
+        depth = 0
+        for i, char in enumerate(text):
+            if char == '(':
+                depth += 1
+            elif char == ')':
+                depth -= 1
+            elif char == ',' and depth == 0:
+                parts.append(text[start:i].strip())
+                start = i + 1
+        parts.append(text[start:].strip())
+        return parts
+
+    def _extract_image_url(self):
+        """Extracts the image URL from the HTML head."""
+        img_tag = self.soup.select_one("head > meta:nth-child(15)")
+        if img_tag and img_tag.get("content"):
+            self.results["Meta"]["Image"] = img_tag.get("content")
+
+    def _process_table_rows(self):
+        """Iterates over all <tr> tags in the main table and processes them."""
+        table = self.soup.select_one("table")
+        if not table:
+            raise ValueError(f"{self.meta} <table> 未找到")
+
+        for tr in table.select('tr'):
+            self._process_row(tr)
+
+    def _process_row(self, tr: Tag):
+        """
+        Processes a single <tr> tag and dispatches to the correct handler
+        based on the number of <td> children.
+        """
+        tds = tr.find_all('td', recursive=False)
+        num_tds = len(tds)
+
+        if num_tds == 1:
+            self._handle_single_td_row(tds[0])
+        elif num_tds == 2:
+            self._handle_double_td_row(tds)
+        else:
+            # This logic can be expanded if rows with 0 or >2 tds are possible
+            pass
+
+    def _handle_single_td_row(self, td: Tag):
+        """Handles logic for a <tr> with exactly one <td>."""
+        header_tag = td.find(['h4', 'h5'])
+        strong_tag = td.find('strong')
+
+        if header_tag:
+            # Case 1.1: This is a new section header (e.g., <h4>General</h4>)
+            section_name = header_tag.get_text(strip=True).replace(':', '')
+            self.current_section_key = section_name
+            self.results[self.current_section_key] = {}
+            self.last_field_key = None  # Reset last field on new section
+        elif strong_tag and list(td.children):
+            # Case 1.2: A field-value pair within one <td>
+            field = strong_tag.get_text(strip=True)
+            # The value is assumed to be the last text node in the <td>
+            value_text = list(td.children)[-1].get_text(strip=True)
+            values = self._split_by_commas_outside_parentheses(value_text)
+
+            if self.current_section_key:
+                self.results[self.current_section_key][field] = values
+                self.last_field_key = field
+
+    def _handle_double_td_row(self, tds: list[Tag]):
+        """Handles logic for a <tr> with exactly two <td>s."""
+        field_text = tds[0].get_text(strip=True)
+        value_text = tds[1].get_text(strip=True)
+
+        if not self.current_section_key:
+            raise ValueError(f"{self.meta} 解析错误, 行 {value_text} 没有章节.")
+
+        if field_text:
+            # Case 2.1: A standard Field-Value pair
+            field = field_text
+            values = self._split_by_commas_outside_parentheses(value_text)
+            self.results[self.current_section_key][field] = values
+            self.last_field_key = field
+        else:
+            # Case 2.2: A continuation of the previous field's value
+            if self.last_field_key:
+                self.results[self.current_section_key][self.last_field_key].append(value_text)
+            else:
+                raise ValueError(f"{self.meta} 解析错误, 行 {value_text} 没有字段.")
+
+    def _apply_patches(self):
+        """
+        Applies specific fixes or default values for known problematic item IDs
+        after the main parsing is complete. This isolates special cases from
+        the general parsing logic.
+        """
+        if self.meta.inst_id == 2239:
+            power_supply_section = self.results.get("Power Supply", {})
+            if not power_supply_section:  # If the section is empty
+                logger.warning(f"{self.meta} 解析错误, Power Supply 章节为空; 添加默认值 Battery.")
+                self.results["Power Supply"] = {"Battery": []}
+
+        elif self.meta.inst_id in [4796, 6095]:
+            sw_env_section = self.results.get("Software Environment", {})
+            if not sw_env_section:
+                logger.warning(f"{self.meta} 解析错误, Software Environment 章节为空; 添加默认值 Platform: Android, Operating System: Google Android 4.2.2 (Jelly Bean).")
+                self.results["Software Environment"] = {
+                    "Platform": ["Android"],
+                    "Operating System": ["Google Android 4.2.2 (Jelly Bean)"]
+                }
+

@@ -21,4 +21,13 @@ class InstMeta:
     inst_cat: InstCat
     inst_id: int
 
+class Instance:
+    def __init__(self, meta: InstMeta, data: dict):
+        self.meta = meta
+        self.data = data
+
+    def __str__(self):
+        return f"Instance(inst_cat={self.meta.inst_cat}, inst_id={self.meta.inst_id})"
+
+
 

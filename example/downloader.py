@@ -6,16 +6,20 @@ async def main():
         print(await session.get_data(InstMeta(InstCat.DEVICE, 1)))
         async for i in session.search("8Gen3", InstCat.DEVICE):
             print(i)
+        metas = []
         async for i in session.query(
                 InstCat.DEVICE,
                 params={
-                "CPU": [
-                    "Snapdragon 8 Gen 3 SM8650-AB",
-                    "Dimensity 9300 MT6989"
-                ]
-            }
+                    "CPU": [
+                        "Snapdragon 865 5G SM8250",
+                        "Snapdragon 865+ 5G SM8250-AB",
+                        "Snapdragon 870 5G SM8250-AC"
+                    ]
+                }
         ):
-            print(i)
+            metas.append(i)
+        async for i in session.get_data_multi(metas):
+            print(i.data["Introduction"]["Model"][0],"   ", i.data["Application processor, Chipset"]["CPU"][0])
 
 
 if __name__ == "__main__":

@@ -9,7 +9,7 @@ class AbstractAsyncRunner(abc.ABC):
         raise NotImplementedError("register method must be implemented")
 
     @abc.abstractmethod
-    async def run(self) -> AsyncGenerator[Any, None]:
+    async def run(self) -> AsyncGenerator:
         raise NotImplementedError("run method must be implemented")
 
 
@@ -20,12 +20,13 @@ class AsyncSerialRunner(AbstractAsyncRunner):
     def register(self, coro: Coroutine):
         self._coroutines.append(coro)
 
-    def multi_register(self, coroutines: list[Coroutine]):
+    def register_multi(self, coroutines: list[Coroutine]):
         self._coroutines.extend(coroutines)
 
-    async def run(self) -> AsyncGenerator[Any, None]:
+    async def run(self) -> AsyncGenerator:
         for task in self._coroutines:
             yield await task
+        self._coroutines.clear()
 
 
 class AsyncParallelRunner(AbstractAsyncRunner):
@@ -36,10 +37,10 @@ class AsyncParallelRunner(AbstractAsyncRunner):
     def register(self, coro: Coroutine):
         self._coroutines.append(coro)
 
-    def multi_register(self, coroutines: list[Coroutine]):
+    def register_multi(self, coroutines: list[Coroutine]):
         self._coroutines.extend(coroutines)
 
-    async def run(self) -> AsyncGenerator[Any, None]:
+    async def run(self) -> AsyncGenerator:
         # Semaphore
         semaphore = asyncio.Semaphore(self._max_workers)
 
@@ -47,6 +48,7 @@ class AsyncParallelRunner(AbstractAsyncRunner):
             async with semaphore:
                 return await coro
 
-        result = await asyncio.gather(*[sem_coro(coro) for coro in self._coroutines])
+        result = await asyncio.gather(*(sem_coro(coro) for coro in self._coroutines))
         for task in result:
             yield task
+        self._coroutines.clear()

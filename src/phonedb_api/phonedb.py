@@ -6,10 +6,9 @@ from typing import AsyncGenerator
 import lxml.etree
 
 from .client import Client
-from .instance import InstMeta, InstCat
-from .response import PhoneDBResponse
+from .instance import InstMeta, InstCat, Instance
 from .runner import AbstractAsyncRunner, AsyncParallelRunner
-
+from .parse import QueryFormParser, InstanceParser
 
 # Solana saga
 
@@ -22,7 +21,7 @@ class AbstractPhoneDBSession(abc.ABC):
         raise NotImplementedError
 
     @abc.abstractmethod
-    def get_data(self, inst_meta: InstMeta) -> dict:
+    def get_data(self, inst_meta: InstMeta) -> Instance:
         """
         获取实例数据
         """
@@ -72,7 +71,7 @@ class PhoneDBHTTPSession(AbstractPhoneDBSession):
         query = urllib.parse.parse_qs(parsed_url.query)
         return int(query["id"][0])
 
-    async def get_data(self, inst_meta: InstMeta) -> dict:
+    async def get_data(self, inst_meta: InstMeta) -> Instance:
         response = await self.session.retryable_get(
             f"https://phonedb.net/index.php",
             params={
@@ -81,7 +80,16 @@ class PhoneDBHTTPSession(AbstractPhoneDBSession):
                 "d": "detailed_specs"
             }
         )
-        return await response.parse_instance()
+        return await InstanceParser(inst_meta, await response.text()).parse()
+
+    async def get_data_multi(self, inst_metas: list[InstMeta]) -> AsyncGenerator[Instance]:
+        for inst_meta in inst_metas:
+            self.runner.register(
+                self.get_data(inst_meta)
+            )
+
+        async for data in self.runner.run():
+            yield data
 
     async def search(self, query: str, inst_cat: InstCat) -> AsyncGenerator[InstMeta]:
         # 为初始请求添加重试
@@ -102,20 +110,9 @@ class PhoneDBHTTPSession(AbstractPhoneDBSession):
 
         # Do-While
         for i in range(1, math.ceil(results_count / 29)):
-            tree = lxml.etree.HTML(await response.text())
-            for j in tree.xpath("/html/body/div[5]")[0].getchildren():
-                if j.tag != "div" or j.get("style"):
-                    continue
-                yield InstMeta(
-                    inst_cat=inst_cat,
-                    inst_id=int(urllib.parse.parse_qs(
-                        urllib.parse.urlparse(j.getchildren()[0].getchildren()[0].get("href")).query
-                    )["id"][0])
-                )
-
             filter_arg = i * 29
             # 为分页请求添加重试
-            response = await self.session.retryable_post(
+            self.runner.register(self.session.retryable_post(
                 f"https://phonedb.net/index.php",
                 params={
                     "m": inst_cat,
@@ -126,7 +123,19 @@ class PhoneDBHTTPSession(AbstractPhoneDBSession):
                     "search_exp": query,
                     "search_header": "",
                 }
-            )
+            ))
+
+        async for response in self.runner.run():
+            tree = lxml.etree.HTML(await response.text())
+            for j in tree.xpath("/html/body/div[5]")[0].getchildren():
+                if j.tag != "div" or j.get("style"):
+                    continue
+                yield InstMeta(
+                    inst_cat=inst_cat,
+                    inst_id=int(urllib.parse.parse_qs(
+                        urllib.parse.urlparse(j.getchildren()[0].getchildren()[0].get("href")).query
+                    )["id"][0])
+                )
 
     async def query(self, inst_cat: InstCat, params: dict) -> AsyncGenerator[InstMeta]:
         # 为初始请求添加重试
@@ -139,9 +148,9 @@ class PhoneDBHTTPSession(AbstractPhoneDBSession):
             }
         )
 
-        payload = await response.create_query_payload(params)
+        payload = await QueryFormParser(await response.text()).parse(params)
         # 为POST请求添加重试
-        response: PhoneDBResponse = await self.session.retryable_post(
+        response = await self.session.retryable_post(
             f"https://phonedb.net/index.php",
             params={
                 "m": inst_cat,
@@ -150,8 +159,6 @@ class PhoneDBHTTPSession(AbstractPhoneDBSession):
             },
             data=payload
         )
-        with open('response.html', 'w', encoding='utf-8') as f:
-            f.write(await response.text())
 
         tree = lxml.etree.HTML(await response.text())
         text = tree.xpath("/html/body/div[5]/form/div[2]/text()[1]")[0]
