@@ -5,7 +5,7 @@ from typing import Callable, AsyncGenerator, Coroutine, Awaitable, Any
 
 class AbstractAsyncRunner(abc.ABC):
     @abc.abstractmethod
-    def register(self, coro: Coroutine):
+    def register(self, coro: Awaitable[Any]):
         raise NotImplementedError("register method must be implemented")
 
     @abc.abstractmethod
@@ -15,12 +15,12 @@ class AbstractAsyncRunner(abc.ABC):
 
 class AsyncSerialRunner(AbstractAsyncRunner):
     def __init__(self):
-        self._coroutines: list[Coroutine] = []
+        self._coroutines: list[Awaitable[Any]] = []
 
-    def register(self, coro: Coroutine):
+    def register(self, coro: Awaitable[Any]):
         self._coroutines.append(coro)
 
-    def register_multi(self, coroutines: list[Coroutine]):
+    def register_multi(self, coroutines: list[Awaitable[Any]]):
         self._coroutines.extend(coroutines)
 
     async def run(self) -> AsyncGenerator:
@@ -31,20 +31,20 @@ class AsyncSerialRunner(AbstractAsyncRunner):
 
 class AsyncParallelRunner(AbstractAsyncRunner):
     def __init__(self, max_workers: int = 16):
-        self._coroutines: list[Coroutine] = []
+        self._coroutines: list[Awaitable[Any]] = []
         self._max_workers = max_workers
 
-    def register(self, coro: Coroutine):
+    def register(self, coro: Awaitable[Any]):
         self._coroutines.append(coro)
 
-    def register_multi(self, coroutines: list[Coroutine]):
+    def register_multi(self, coroutines: list[Awaitable[Any]]):
         self._coroutines.extend(coroutines)
 
     async def run(self) -> AsyncGenerator:
         # Semaphore
         semaphore = asyncio.Semaphore(self._max_workers)
 
-        async def sem_coro(coro: Coroutine):
+        async def sem_coro(coro: Awaitable[Any]):
             async with semaphore:
                 return await coro
 

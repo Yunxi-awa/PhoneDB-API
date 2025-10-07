@@ -259,6 +259,7 @@ class QueryFormParser:
 
         return payload
 
+
 class InstanceParser:
     """
     Parses an HTML table into a structured dictionary, handling specific edge cases
@@ -271,7 +272,7 @@ class InstanceParser:
 
         """
         self.meta = meta
-        self.soup = BeautifulSoup(html, 'lxml')
+        self.soup = BeautifulSoup(html, 'lxml') if "Error 404: not found" not in html else None
         self.results: dict = {}
 
         # State variables for tracking context during parsing
@@ -291,18 +292,15 @@ class InstanceParser:
             }
         }
 
-        # Handle early exit for specific cases
-        if self.meta.inst_cat == InstCat.DEVICE and self.meta.inst_id == 24170:
+        if not self.soup:
             logger.warning(f"{self.meta} 无内容")
             return Instance(self.meta, self.results)
 
-
         self._extract_image_url()
         self._process_table_rows()
-        self._apply_patches()
+        # self._apply_patches()
 
         return Instance(self.meta, self.results)
-
 
     @staticmethod
     def _split_by_commas_outside_parentheses(text: str) -> list[str]:
@@ -384,6 +382,33 @@ class InstanceParser:
         if not self.current_section_key:
             raise ValueError(f"{self.meta} 解析错误, 行 {value_text} 没有章节.")
 
+        match self.meta.inst_id:
+            case 2239 | 2243:
+                power_supply_section = self.results.get("Power Supply", {})
+                if not power_supply_section:  # If the section is empty
+                    logger.warning(f"{self.meta} 解析错误, Power Supply 章节为空; 添加默认值 Battery.")
+                    self.results["Power Supply"] = {"Battery": []}
+                    self.last_field_key = "Battery"
+
+            case 4796 | 6095:
+                sw_env_section = self.results.get("Software Environment", {})
+                if not sw_env_section:
+                    logger.warning(
+                        f"{self.meta} 解析错误, Software Environment 章节为空; 添加默认值 Platform: Android, Operating System: Google Android 4.2.2 (Jelly Bean).")
+                    self.results["Software Environment"] = {
+                        "Platform": ["Android"],
+                        "Operating System": ["Google Android 4.2.2 (Jelly Bean)"]
+                    }
+                    self.last_field_key = "Operating System"
+            case 8074:
+                sw_env_section = self.results.get("Software Environment", {})
+                if not sw_env_section:
+                    logger.warning(
+                        f"{self.meta} 解析错误, Software Environment 章节为空; 添加默认值 Operating System.")
+                    self.results["Software Environment"] = {
+                        "Operating System": []
+                    }
+                    self.last_field_key = "Operating System"
         if field_text:
             # Case 2.1: A standard Field-Value pair
             field = field_text
@@ -396,25 +421,3 @@ class InstanceParser:
                 self.results[self.current_section_key][self.last_field_key].append(value_text)
             else:
                 raise ValueError(f"{self.meta} 解析错误, 行 {value_text} 没有字段.")
-
-    def _apply_patches(self):
-        """
-        Applies specific fixes or default values for known problematic item IDs
-        after the main parsing is complete. This isolates special cases from
-        the general parsing logic.
-        """
-        if self.meta.inst_id == 2239:
-            power_supply_section = self.results.get("Power Supply", {})
-            if not power_supply_section:  # If the section is empty
-                logger.warning(f"{self.meta} 解析错误, Power Supply 章节为空; 添加默认值 Battery.")
-                self.results["Power Supply"] = {"Battery": []}
-
-        elif self.meta.inst_id in [4796, 6095]:
-            sw_env_section = self.results.get("Software Environment", {})
-            if not sw_env_section:
-                logger.warning(f"{self.meta} 解析错误, Software Environment 章节为空; 添加默认值 Platform: Android, Operating System: Google Android 4.2.2 (Jelly Bean).")
-                self.results["Software Environment"] = {
-                    "Platform": ["Android"],
-                    "Operating System": ["Google Android 4.2.2 (Jelly Bean)"]
-                }
-
