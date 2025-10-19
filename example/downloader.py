@@ -64,7 +64,6 @@ async def main():
                   "   ", i.data["Operative Memory"].get("RAM Capacity", ["N/A"])[0],
                   )
 
-
 if __name__ == "__main__":
     import asyncio
 
