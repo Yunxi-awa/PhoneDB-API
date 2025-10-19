@@ -46,11 +46,11 @@ async def main():
                     Query("90", QueryStrategy.WITHOUT_UNIT_AT_LEAST),
                 ],
             },
-            # "Operative Memory": {
-            #     "RAM Capacity": [
-            #         Query("8192"),
-            #     ]
-            # }
+            "Operative Memory": {
+                "RAM Capacity": [
+                    Query("8192", QueryStrategy.WITHOUT_UNIT_AT_LEAST),
+                ]
+            }
 
         }):
             metas.append(i)
