@@ -1,16 +1,17 @@
 import abc
 import asyncio
+import os
 from typing import Callable, AsyncGenerator, Coroutine, Awaitable, Any
 
 
 class AbstractAsyncRunner(abc.ABC):
     @abc.abstractmethod
     def register(self, coro: Awaitable[Any]):
-        raise NotImplementedError("register method must be implemented")
+        pass
 
     @abc.abstractmethod
-    async def run(self) -> AsyncGenerator:
-        raise NotImplementedError("run method must be implemented")
+    async def run(self) -> AsyncGenerator[Any, None]:
+        pass
 
 
 class AsyncSerialRunner(AbstractAsyncRunner):
@@ -23,16 +24,16 @@ class AsyncSerialRunner(AbstractAsyncRunner):
     def register_multi(self, coroutines: list[Awaitable[Any]]):
         self._coroutines.extend(coroutines)
 
-    async def run(self) -> AsyncGenerator:
+    async def run(self) -> AsyncGenerator[Any, None]:
         for task in self._coroutines:
             yield await task
         self._coroutines.clear()
 
 
 class AsyncParallelRunner(AbstractAsyncRunner):
-    def __init__(self, max_workers: int = 16):
+    def __init__(self, max_workers: int = os.process_cpu_count()):
         self._coroutines: list[Awaitable[Any]] = []
-        self._max_workers = max_workers
+        self._max_workers = max_workers or 32
 
     def register(self, coro: Awaitable[Any]):
         self._coroutines.append(coro)
@@ -40,7 +41,7 @@ class AsyncParallelRunner(AbstractAsyncRunner):
     def register_multi(self, coroutines: list[Awaitable[Any]]):
         self._coroutines.extend(coroutines)
 
-    async def run(self) -> AsyncGenerator:
+    async def run(self) -> AsyncGenerator[Any, None]:
         # Semaphore
         semaphore = asyncio.Semaphore(self._max_workers)
 
@@ -48,7 +49,6 @@ class AsyncParallelRunner(AbstractAsyncRunner):
             async with semaphore:
                 return await coro
 
-        result = await asyncio.gather(*(sem_coro(coro) for coro in self._coroutines))
-        for task in result:
-            yield task
+        for task in asyncio.as_completed((sem_coro(coro) for coro in self._coroutines)):
+            yield await task
         self._coroutines.clear()

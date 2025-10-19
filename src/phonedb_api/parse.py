@@ -4,7 +4,7 @@ import re
 from bs4 import PageElement, Tag, NavigableString, BeautifulSoup
 from loguru import logger
 
-from .instance import InstCat, InstMeta, Instance
+from .instance import InstMeta, Instance
 
 
 class QueryFormParser:

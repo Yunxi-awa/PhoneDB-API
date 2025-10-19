@@ -29,5 +29,8 @@ class Instance:
     def __str__(self):
         return f"Instance(inst_cat={self.meta.inst_cat}, inst_id={self.meta.inst_id})"
 
+    def __hash__(self):
+        return hash((self.meta.inst_cat, self.meta.inst_id))
+
 
 

@@ -5,17 +5,15 @@ import urllib.parse
 from functools import wraps
 from typing import AsyncGenerator, Generator
 
-import aiofiles
 import aiohttp
 import curl_cffi
 import lxml.etree
-import orjson
 from loguru import logger
 
-from .database import AbstractDatabase, MemoryDatabase
+from .database import AbstractDatabase
 from .instance import InstMeta, InstCat, Instance
-from .runner import AbstractAsyncRunner, AsyncParallelRunner
 from .parse import QueryFormParser, InstanceParser
+from .runner import AbstractAsyncRunner
 
 
 def sync_retry(max_attempts=3, initial_wait=1, max_wait=10):
@@ -115,21 +113,28 @@ class AbstractPhoneDBSession(abc.ABC):
         raise NotImplementedError
 
     @abc.abstractmethod
-    def search_online(self, query: str, inst_cat: InstCat) -> Generator[InstMeta]:
+    def search_website(self, query: str, inst_cat: InstCat) -> Generator[InstMeta]:
         """
         搜索实例
         """
         raise NotImplementedError
 
     @abc.abstractmethod
-    def search_offline(self, query: str, inst_cat: InstCat) -> Generator[Instance]:
+    def search_database(self, query: str, inst_cat: InstCat) -> Generator[Instance]:
         """
         搜索实例
         """
         raise NotImplementedError
 
     @abc.abstractmethod
-    def query(self, **kwargs) -> list[InstMeta]:
+    def query_website(self, **kwargs) -> list[InstMeta]:
+        """
+        查询实例
+        """
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def query_database(self, **kwargs) -> list[Instance]:
         """
         查询实例
         """
@@ -179,7 +184,7 @@ class PhoneDBHTTPSession(AbstractPhoneDBSession):
     @async_retry(max_attempts=8, initial_wait=1, max_wait=10)
     async def get_data(self, inst_meta: InstMeta) -> Instance:
         if inst_meta not in self.database:
-            logger.debug(f"No {inst_meta}")
+            # logger.debug(f"No {inst_meta}")
             response = await self.curl_cffi_session.get(
                 f"https://phonedb.net/index.php",
                 params={
@@ -196,12 +201,15 @@ class PhoneDBHTTPSession(AbstractPhoneDBSession):
             self.runner.register(
                 self.get_data(inst_meta)
             )
-
+        logger.debug(f"Register {len(inst_metas)} tasks.")
+        count = 0
         async for data in self.runner.run():
             yield data
+            count += 1
+            logger.debug(f"Progress: {count}/{len(inst_metas)}")
 
     @sync_retry(max_attempts=8, initial_wait=1, max_wait=10)
-    async def search_online(self, query: str, inst_cat: InstCat) -> AsyncGenerator[InstMeta]:
+    async def search_website(self, query: str, inst_cat: InstCat) -> AsyncGenerator[InstMeta]:
         # 为初始请求添加重试
         response = await self.curl_cffi_session.post(
             f"https://phonedb.net/index.php",
@@ -235,6 +243,7 @@ class PhoneDBHTTPSession(AbstractPhoneDBSession):
                 }
             ))
 
+
         async for response in self.runner.run():
             tree = lxml.etree.HTML(response.text)
             for j in tree.xpath("/html/body/div[5]")[0].getchildren():
@@ -247,12 +256,12 @@ class PhoneDBHTTPSession(AbstractPhoneDBSession):
                     )["id"][0])
                 )
 
-    def search_offline(self, query: str, inst_cat: InstCat) -> Generator[Instance]:
-        for inst_meta, data in self.database.search_data(query, inst_cat):
-            yield Instance(inst_meta, data)
+    async def search_database(self, query: str, inst_cat: InstCat) -> AsyncGenerator[Instance]:
+        for inst_id, data in self.database.search_data(inst_cat, query):
+            yield Instance(InstMeta(inst_cat, inst_id), data)
 
     @sync_retry(max_attempts=8, initial_wait=1, max_wait=10)
-    async def query(self, inst_cat: InstCat, params: dict) -> AsyncGenerator[InstMeta]:
+    async def query_website(self, inst_cat: InstCat, params: dict) -> AsyncGenerator[InstMeta]:
         # 为初始请求添加重试
         response = await self.curl_cffi_session.get(
             f"https://phonedb.net/index.php",
@@ -281,7 +290,6 @@ class PhoneDBHTTPSession(AbstractPhoneDBSession):
             return
         results_count = int(text.split(" ")[0])
 
-        # Do-While
         for i in range(1, math.ceil(results_count / 29)):
             filter_arg = i * 29
             # 为分页请求添加重试
@@ -294,6 +302,7 @@ class PhoneDBHTTPSession(AbstractPhoneDBSession):
                 },
                 data=payload | dict(result_lower_limit=str(filter_arg))
             ))
+
 
         async for response in self.runner.run():
             tree = lxml.etree.HTML(await response.text())
@@ -311,3 +320,7 @@ class PhoneDBHTTPSession(AbstractPhoneDBSession):
                         urllib.parse.urlparse(div.getchildren()[0].getchildren()[0].get("href")).query
                     )["id"][0])
                 )
+
+    async def query_database(self, inst_cat: InstCat, params: dict) -> AsyncGenerator[Instance]:
+        for instance in self.database.query_data(inst_cat, params):
+            yield instance
